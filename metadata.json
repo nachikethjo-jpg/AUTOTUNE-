@@ -1,0 +1,6 @@
+{
+  "name": "Indian Vehicle ECU Remapping Software",
+  "description": "Professional ECU remapping, live parameter calibration, OBD-II diagnosis, and fuel maps visualization software designed for popular Indian vehicles, complete with an AI-powered tuning advisor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
