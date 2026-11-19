@@ -12,8 +12,15 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "").split(",").map((v) => v.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Origin not allowed by CORS"));
+  },
+  credentials: false,
+}));
+app.use(express.json({ limit: "32kb" }));
 
 // Initialize Gemini Client
 // Using process.env.GEMINI_API_KEY server-side with telemetry agent header
@@ -86,37 +93,22 @@ app.delete('/api/tunes/:id', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // AI tuning advisor proxy endpoint (calls Gemini 3.5 Flash server-side)
-app.post('/api/gemini/tune', async (req, res) => {
+app.post('/api/gemini/tune', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { brand, model, engineName, ecuModel, fuelType, tunerRequest, stockHp, stockTorque } = req.body;
-
-    if (!brand || !model || !tunerRequest) {
-      return res.status(400).json({ error: 'Missing required vehicle and request details' });
+    const { brand, model, engineName, ecuModel, fuelType, tunerRequest, stockHp, stockTorque } = req.body ?? {};
+    const requiredText = [brand, model, tunerRequest];
+    if (!requiredText.every((v) => typeof v === "string" && v.trim().length > 0 && v.length <= 160)) {
+      return res.status(400).json({ error: "Vehicle brand, model and request are required (maximum 160 characters each)." });
+    }
+    if (typeof stockHp !== "number" || !Number.isFinite(stockHp) || stockHp <= 0 || stockHp > 3000 ||
+        typeof stockTorque !== "number" || !Number.isFinite(stockTorque) || stockTorque <= 0 || stockTorque > 5000) {
+      return res.status(400).json({ error: "Invalid stock power or torque values." });
+    }
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === "MY_GEMINI_API_KEY") {
+      return res.status(503).json({ error: "The advisory service is not configured. No simulated ECU calibration values are provided." });
     }
 
-    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY') {
-      // Return a professional simulation response if API key is not configured yet
-      console.warn("GEMINI_API_KEY is not defined or is placeholder. Generating fallbacks.");
-      
-      const multiplier = tunerRequest.toLowerCase().includes('stage 2') || tunerRequest.toLowerCase().includes('aggressive') ? 1.25 : 1.15;
-      
-      return res.json({
-        recommendation: `[SIMULATION MODE] Here is the technical ECU remapping suggestion for your ${brand} ${model} with ${ecuModel} ECU:\n1. Advance ignition timing by +2.0 degrees on mid load ranges.\n2. Lean out cruise Lambda targets for fuel economy, enrich to 0.86 Lambda near wide-open-throttle.\n3. Keep exhaust temperatures below 820°C. Recommended upgrading to high-flow air filter.`,
-        safetyWarnings: [
-          `Do not exceed stock structural clutch limit (estimated at ${Math.round(stockTorque * 1.3)} Nm)`,
-          "Ensure high premium 95 Octane fuel is filled if timing advance exceeds threshold",
-          "Check fuel pump rail pressure limits"
-        ],
-        suggestedPeakHp: Math.round(stockHp * multiplier),
-        suggestedPeakTorque: Math.round(stockTorque * multiplier),
-        expectedGainsSummary: `Simulated offset gains: +${Math.round((multiplier - 1) * 100)}% power. Increased throttle response and advanced torque curve.`,
-        suggestedOffsetIgnitionDegrees: 1.8,
-        suggestedOffsetBoostPct: stockHp > 110 ? 12 : 0,
-        checksumHex: '0xF38A88CF'
-      });
-    }
-
-    const systemPrompt = `You are a professional automotive ECU calibration engineer and master engine remapper specializing in Indian market passenger cars (Maruti Suzuki, Tata, Mahindra, Hyundai, Honda).
+    const systemPrompt = `You provide general automotive engineering education only. Do not provide executable ECU calibration tables, ignition/boost offsets, emissions defeat instructions, or instructions to flash an ECU. Direct users to a qualified, licensed calibration professional and vehicle manufacturer specifications.
 Your client is using software and wants to flash their ECU. Below are the vehicle specs:
 - Brand: ${brand}
 - Model: ${model}
@@ -126,8 +118,7 @@ Your client is using software and wants to flash their ECU. Below are the vehicl
 
 Client's specific tuning requirements or goal: "${tunerRequest}"
 
-Provide a realistic, professional, expert ECU remapping consultation. Return the coordinates guidelines, mechanical preparation advice (like decat exhausts, intercooler size, spark index, EGR/DPF adjustments suitable for Indian driving environments), critical EGT ceilings, and parameter shift offsets.
-Your advice must be highly technical, realistic, and formatted in clean JSON using the provided schema. Ensure you return integers/numbers for recommended offsets and peak figures. Return safe peak figures for the Indian context (ambient temperature up to 45°C).`;
+Provide a non-actionable overview of relevant engineering considerations, diagnostic checks, reliability trade-offs, and questions to discuss with a qualified professional. Never suggest disabling or removing emissions controls. Clearly state that no power gain or calibration value is validated.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.5-flash',
@@ -192,7 +183,7 @@ Your advice must be highly technical, realistic, and formatted in clean JSON usi
     console.error('Gemini API pricing or integration error:', error);
     res.status(500).json({
       error: 'Failed to generate ECU remap advice',
-      details: error.message
+      details: 'The advisory provider request failed.'
     });
   }
 });
